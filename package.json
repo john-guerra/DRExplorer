@@ -1,0 +1,24 @@
+{
+  "name": "drexplorer",
+  "version": "0.1.0",
+  "description": "Browser-based dimensionality-reduction playground with per-point quality metrics",
+  "type": "module",
+  "license": "MIT",
+  "author": "John Alexis Guerra Gómez",
+  "scripts": {
+    "dev": "observable preview",
+    "build": "observable build",
+    "clean": "observable clean",
+    "deploy": "observable build && ./update.sh"
+  },
+  "dependencies": {
+    "@observablehq/framework": "^1.11.0",
+    "@saehrimnir/druidjs": "^0.8.0",
+    "d3": "^7.9.0",
+    "htl": "^0.3.1",
+    "zadu-js": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

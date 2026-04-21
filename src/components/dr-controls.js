@@ -41,7 +41,7 @@ function renderParam(param, value, onChange) {
     }
     case "select": {
       const select = htl.html`<select>
-        ${param.options.map((o) => htl.html`<option value="${o}" ${o === value ? "selected" : ""}>${o}</option>`)}
+        ${param.options.map((o) => htl.html`<option value=${o} selected=${o === value}>${o}</option>`)}
       </select>`;
       select.addEventListener("input", (e) => onChange(e.target.value));
       return htl.html`<label style="display:flex;gap:.5em;align-items:center;margin:.25em 0;">
@@ -50,7 +50,7 @@ function renderParam(param, value, onChange) {
       </label>`;
     }
     case "bool": {
-      const input = htl.html`<input type="checkbox" ${value ? "checked" : ""}>`;
+      const input = htl.html`<input type="checkbox" checked=${Boolean(value)}>`;
       input.addEventListener("input", (e) => onChange(e.target.checked));
       return htl.html`<label style="display:flex;gap:.5em;align-items:center;margin:.25em 0;">
         <span style="min-width:10em;" title="${param.description ?? ""}">${param.name}</span>
@@ -83,7 +83,7 @@ export function drControls({ algo: initialAlgo = "UMAP", showAdvanced = false } 
     const visibleParams = schema.params.filter((p) => showAdvanced || !p.advanced);
 
     const algoSelect = htl.html`<select style="font-weight:600;">
-      ${DR_ALGORITHMS.map((a) => htl.html`<option value="${a}" ${a === current.algo ? "selected" : ""}>${DR_SCHEMAS[a].label}</option>`)}
+      ${DR_ALGORITHMS.map((a) => htl.html`<option value=${a} selected=${a === current.algo}>${DR_SCHEMAS[a].label}</option>`)}
     </select>`;
     algoSelect.addEventListener("input", (e) => {
       const algo = e.target.value;
@@ -91,7 +91,7 @@ export function drControls({ algo: initialAlgo = "UMAP", showAdvanced = false } 
       render();
     });
 
-    const dynamicToggle = htl.html`<input type="checkbox" ${current.showDynamic ? "checked" : ""}>`;
+    const dynamicToggle = htl.html`<input type="checkbox" checked=${Boolean(current.showDynamic)}>`;
     dynamicToggle.addEventListener("input", (e) => update({ showDynamic: e.target.checked }));
 
     container.replaceChildren(

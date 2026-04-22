@@ -9,6 +9,7 @@ import { navio } from "./components/navio.js";
 import { drControls } from "./components/dr-controls.js";
 import { runList } from "./components/run-list.js";
 import { metricsPanel } from "./components/metrics-panel.js";
+import { scentedCheckbox } from "./components/scented-checkbox.js";
 import { runInWorker } from "./lib/worker-helper.js";
 import { drFit, DR_WORKER_PREAMBLE } from "./lib/dr-worker.js";
 import { computeMetrics, METRICS_WORKER_PREAMBLE } from "./lib/metrics-worker.js";
@@ -30,10 +31,33 @@ const userUpload = view(dataInput({
 ```
 
 ```js
-const data = userUpload.length > 0 ? userUpload : demo.rows;
+const rawData = userUpload.length > 0 ? userUpload : demo.rows;
 ```
 
-Loaded **${data.length}** rows with **${data.length ? Object.keys(data[0]).length : 0}** attributes.
+Loaded **${rawData.length}** rows with **${rawData.length ? Object.keys(rawData[0]).length : 0}** attributes.
+
+## Filter by content type
+
+```js
+// Scented checkboxes show per-type counts; default selection is "CHI 2026
+// Papers" only (the majority track). If the uploaded dataset has no `track`
+// field, the widget still renders but with a single "(undefined)" bucket —
+// so this section is a no-op for non-chi2026 data.
+const selectedTracks = view(scentedCheckbox(rawData, (d) => d.track ?? "(no track)", {
+  label: "Content types to include",
+  value: rawData.length && rawData[0].track ? ["CHI 2026 Papers"] : undefined,
+  selectAll: !rawData.length || !rawData[0].track,
+  cutoff: 0,
+}));
+```
+
+```js
+const data = selectedTracks.length > 0
+  ? rawData.filter((d) => selectedTracks.includes(d.track ?? "(no track)"))
+  : rawData;
+```
+
+**${data.length}** of ${rawData.length} rows selected.
 
 ## Overview
 

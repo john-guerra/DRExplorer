@@ -70,7 +70,7 @@ self.onmessage = async function (e) {
 }
 
 export function runInWorker(fn, arg, options = {}) {
-  const { preamble = "", type = "classic", transferList } = options;
+  const { preamble = "", type = "classic", transferList, signal } = options;
   const src = workerSource(fn, preamble);
   const blob = new Blob([src], { type: "text/javascript" });
 
@@ -82,30 +82,32 @@ export function runInWorker(fn, arg, options = {}) {
       let waiter = null;
       let done = false;
 
+      const deliver = (payload) => {
+        if (waiter) {
+          const r = waiter;
+          waiter = null;
+          r.resolve({ value: payload, done: false });
+        } else {
+          queue.push(payload);
+        }
+      };
+
       const onMessage = (e) => {
         const payload = e.data;
-        const isError = payload && payload.__error__;
-        if (waiter) {
-          const r = waiter;
-          waiter = null;
-          r.resolve({ value: payload, done: false });
-        } else {
-          queue.push(payload);
-        }
-        if (isError) done = true;  // flush error first, then end
+        deliver(payload);
+        if (payload && payload.__error__) done = true;  // flush first, then end
       };
       const onError = (ev) => {
-        const payload = { __error__: true, message: ev?.message ?? "worker error" };
-        if (waiter) {
-          const r = waiter;
-          waiter = null;
-          r.resolve({ value: payload, done: false });
-        } else {
-          queue.push(payload);
-        }
+        deliver({ __error__: true, message: ev?.message ?? "worker error" });
         done = true;
       };
-      const onExit = () => {
+      // A messageerror means the main thread got an undeserializable message —
+      // it's an error, not a clean close. Surface it before terminating.
+      const onMessageError = (ev) => {
+        deliver({ __error__: true, message: `messageerror: ${ev?.type ?? "undeserializable"}` });
+        done = true;
+      };
+      const onAbort = () => {
         done = true;
         waiter?.resolve({ value: undefined, done: true });
         waiter = null;
@@ -113,7 +115,11 @@ export function runInWorker(fn, arg, options = {}) {
 
       worker.addEventListener("message", onMessage);
       worker.addEventListener("error", onError);
-      worker.addEventListener("messageerror", onExit);
+      worker.addEventListener("messageerror", onMessageError);
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
 
       try {
         worker.postMessage(arg, transferList);
@@ -130,6 +136,7 @@ export function runInWorker(fn, arg, options = {}) {
       } finally {
         worker.terminate();
         URL.revokeObjectURL(url);
+        signal?.removeEventListener?.("abort", onAbort);
       }
     },
   };

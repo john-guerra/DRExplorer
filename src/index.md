@@ -90,6 +90,11 @@ const runStatus = (async function* () {
             currentEpoch: 0, targetEpoch: 0, algo: config.algo, embedding: [] };
     return;
   }
+  // Tie the worker's lifetime to this cell's invalidation. When any dep
+  // (sampledData, config, runBtn) changes, the old worker is aborted before
+  // a new one starts — no zombie runs writing into the reactive graph.
+  const ac = new AbortController();
+  invalidation.then(() => ac.abort());
   const iter = runInWorker(drFit, {
     matrix,
     algo: config.algo,
@@ -99,6 +104,7 @@ const runStatus = (async function* () {
   }, {
     type: "module",
     preamble: DR_WORKER_PREAMBLE,
+    signal: ac.signal,
   });
   for await (const tick of iter) {
     if (tick?.__error__) {

@@ -27,13 +27,13 @@ const rightRun = rightPick ?? runs[1] ?? null;
     <h3>${leftRun?.name ?? "Left run"}</h3>
     ${leftRun
       ? BrushableScatterPlot(leftRun.embedding.map((xy, i) => ({ id: i, x: xy[0], y: xy[1] })), { x: "x", y: "y", id: "id" })
-      : htl.html`<em>No run selected</em>`}
+      : html`<em>No run selected</em>`}
   </div>
   <div class="card">
     <h3>${rightRun?.name ?? "Right run"}</h3>
     ${rightRun
       ? BrushableScatterPlot(rightRun.embedding.map((xy, i) => ({ id: i, x: xy[0], y: xy[1] })), { x: "x", y: "y", id: "id" })
-      : htl.html`<em>No run selected</em>`}
+      : html`<em>No run selected</em>`}
   </div>
 </div>
 

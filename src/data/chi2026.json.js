@@ -18,7 +18,6 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parse } from "node:path";
 
 const ROOT = process.env.CHI2026_DATA_DIR
   ?? "/Users/aguerra/workspace/chi2026_papers";

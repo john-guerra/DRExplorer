@@ -10,6 +10,7 @@ import { drControls } from "./components/dr-controls.js";
 import { runList } from "./components/run-list.js";
 import { metricsPanel } from "./components/metrics-panel.js";
 import { scentedCheckbox } from "./components/scented-checkbox.js";
+import { scatterControls } from "./components/scatter-controls.js";
 import { runInWorker } from "./lib/worker-helper.js";
 import { drFit, DR_WORKER_PREAMBLE } from "./lib/dr-worker.js";
 import { computeMetrics, METRICS_WORKER_PREAMBLE } from "./lib/metrics-worker.js";
@@ -232,9 +233,54 @@ const viewData = sampledData.map((d, i) => {
 ```
 
 ```js
-// The metrics panel exposes {colorBy: "trustworthiness" | "continuity" | null}.
-// null means keep coloring by the default attribute.
-const colorBy = metricsPick?.colorBy ?? "track";
+// Scatter encoding controls. Lives in its own cell so picks survive DR
+// runs — only rebuilds when the set of attributes changes. Attribute list
+// excludes x/y/id (reserved for the scatter position/identity) and
+// embedding (an Array, not a scalar).
+// Reserved column names skipped from the encoding picker. x/y/id are the
+// scatter's position + identity channels; embedding is an Array, not a
+// scalar; navio attaches __seqId and __i as internal sort/filter keys.
+// Computed from sampledData (stable across DR runs) rather than viewData
+// (rebuilt per tick with fresh x/y) so the controls widget doesn't rebuild
+// — preserving user picks across DR runs.
+const RESERVED_COLUMNS = new Set(["x", "y", "id", "embedding", "__seqId", "__i"]);
+const encodingColumns = sampledData.length > 0
+  ? Object.keys(sampledData[0]).filter((k) => !RESERVED_COLUMNS.has(k))
+  : [];
+```
+
+```js
+const encodings = view(scatterControls({
+  columns: encodingColumns,
+  defaults: { color: "track", size: null, opacity: null },
+}));
+```
+
+```js
+// Metrics panel exposes {colorBy: "trustworthiness" | "continuity" | null}.
+// A non-null colorBy from the panel overrides the encodings picker for
+// color only (since the panel was designed around exposing metric
+// distributions on the scatter). Size/opacity always come from encodings.
+const effectiveColor = metricsPick?.colorBy ?? encodings?.color ?? null;
+```
+
+```js
+// Opacity is not a native channel of @john-guerra/brushable-scatterplot; we
+// inject it via vegaSpecWrapper. If the user didn't pick an opacity
+// attribute, return the spec unchanged so the widget's hardcoded 0.6
+// opacity applies to all marks.
+function withOpacity(attr) {
+  if (!attr) return (spec) => spec;
+  const isNumeric = viewData.length > 0 && typeof viewData[0][attr] === "number";
+  return (spec) => {
+    const withEnc = { ...spec, encoding: { ...(spec.encoding ?? {}) } };
+    withEnc.encoding.opacity = {
+      field: attr,
+      type: isNumeric ? "quantitative" : "nominal",
+    };
+    return withEnc;
+  };
+}
 ```
 
 ```js
@@ -245,11 +291,16 @@ const scatter = view(await BrushableScatterPlot(viewData, {
   x: "x",
   y: "y",
   id: "id",
-  color: colorBy,
-  colorScheme: colorBy === "trustworthiness" || colorBy === "continuity" ? "viridis" : undefined,
+  color: effectiveColor,
+  size: encodings?.size ?? null,
+  colorScheme:
+    effectiveColor === "trustworthiness" || effectiveColor === "continuity"
+      ? "viridis"
+      : undefined,
   tooltip: ["title", "authors", "track"],
   width: 720,
   height: 480,
+  vegaSpecWrapper: withOpacity(encodings?.opacity),
 }));
 ```
 
@@ -384,11 +435,16 @@ const refineViewData = (refineStatus?.embedding ?? []).map((xy, i) => {
 const refineScatter = refineViewData.length > 0
   ? await BrushableScatterPlot(refineViewData, {
       x: "x", y: "y", id: "id",
-      color: colorBy,
-      colorScheme: colorBy === "trustworthiness" || colorBy === "continuity" ? "viridis" : undefined,
+      color: effectiveColor,
+      size: encodings?.size ?? null,
+      colorScheme:
+        effectiveColor === "trustworthiness" || effectiveColor === "continuity"
+          ? "viridis"
+          : undefined,
       tooltip: ["title", "authors", "track"],
       width: 560,
       height: 360,
+      vegaSpecWrapper: withOpacity(encodings?.opacity),
     })
   : html`<em style="color:var(--theme-foreground-muted);">Brush a region in the scatter above, then press Refine.</em>`;
 display(refineScatter);

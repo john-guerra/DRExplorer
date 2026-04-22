@@ -57,7 +57,9 @@ export function BrushableScatterPlot(data, options = {}) {
       ? {
           scheme: colorScheme ?? (isColorNumeric ? "turbo" : "tableau10"),
           legend: true,
-          type: isColorNumeric ? "quantitative" : "categorical",
+          // Let Plot infer the scale type from the data — passing
+          // "quantitative"/"categorical" strings directly is not Plot's
+          // vocabulary. isColorNumeric still drives the default scheme.
         }
       : undefined,
     r: sizeAccessor ? { range: [2, 12] } : undefined,

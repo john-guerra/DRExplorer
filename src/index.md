@@ -8,8 +8,10 @@ import { BrushableScatterPlot } from "./components/brushable-scatter.js";
 import { navio } from "./components/navio.js";
 import { drControls } from "./components/dr-controls.js";
 import { runList } from "./components/run-list.js";
+import { metricsPanel } from "./components/metrics-panel.js";
 import { runInWorker } from "./lib/worker-helper.js";
 import { drFit, DR_WORKER_PREAMBLE } from "./lib/dr-worker.js";
+import { computeMetrics, METRICS_WORKER_PREAMBLE } from "./lib/metrics-worker.js";
 ```
 
 ## Load data
@@ -127,16 +129,87 @@ display(html`<div style="display:flex;gap:1em;align-items:center;font-size:.9em;
 </div>`);
 ```
 
+## Metrics (zadu-js)
+
+```js
+// Fire metrics only after a DR run is Finished. Separate worker so the
+// main thread and the DR worker stay free. Uses the same AbortSignal
+// pattern as the DR worker so metric computations don't zombie either.
+const metricsK = view(Inputs.range([5, 50], { value: 15, step: 1, label: "Metrics k (kNN size)" }));
+```
+
+```js
+const metricsStatus = (async function* () {
+  if (runStatus?.status !== "Finished" || !runStatus.embedding?.length) {
+    yield { status: "Idle", result: null };
+    return;
+  }
+  const hd = sampledData.map((d) => d.embedding);
+  const ld = runStatus.embedding;
+  if (!hd.length || hd.length !== ld.length) {
+    yield { status: "Error", error: "hd/ld length mismatch", result: null };
+    return;
+  }
+  const ac = new AbortController();
+  invalidation.then(() => ac.abort());
+  yield { status: "Starting", result: null };
+  const iter = runInWorker(computeMetrics, { hd, ld, k: metricsK }, {
+    type: "module",
+    preamble: METRICS_WORKER_PREAMBLE,
+    signal: ac.signal,
+  });
+  for await (const tick of iter) {
+    if (tick?.__error__) {
+      yield { status: "Error", error: tick.message, result: null };
+      return;
+    }
+    yield {
+      status: tick.status,
+      currentMetric: tick.metric,
+      result: tick.result ?? tick.partial ?? null,
+    };
+  }
+})();
+```
+
+```js
+const metricsPick = view(metricsPanel(metricsStatus?.result, { k: metricsK }));
+```
+
+```js
+display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
+  <strong>Metrics:</strong> ${metricsStatus?.status ?? "Idle"}
+  ${metricsStatus?.currentMetric ? ` · ${metricsStatus.currentMetric}` : ""}
+  ${metricsStatus?._time ? ` · +${Math.round(metricsStatus._time)} ms` : ""}
+  ${metricsStatus?.error ? ` — ${metricsStatus.error}` : ""}
+</div>`);
+```
+
 ## Scatter
 
 ```js
 // Merge the current embedding into the tidy rows so the scatter sees
 // { ...d, x, y } with fresh coords. Fall back to d.x / d.y (baseline) if the
-// run hasn't produced coords for a given row yet.
+// run hasn't produced coords for a given row yet. Also attach per-point
+// metric scores so the color channel can pick them up.
 const viewData = sampledData.map((d, i) => {
   const xy = runStatus?.embedding?.[i];
-  return xy ? { ...d, x: xy[0], y: xy[1] } : d;
+  const coords = xy ? { x: xy[0], y: xy[1] } : null;
+  const t = metricsStatus?.result?.trustworthiness?.localScores?.[i];
+  const c = metricsStatus?.result?.continuity?.localScores?.[i];
+  return {
+    ...d,
+    ...(coords ?? {}),
+    ...(t !== undefined ? { trustworthiness: t } : {}),
+    ...(c !== undefined ? { continuity: c } : {}),
+  };
 });
+```
+
+```js
+// The metrics panel exposes {colorBy: "trustworthiness" | "continuity" | null}.
+// null means keep coloring by the default attribute.
+const colorBy = metricsPick?.colorBy ?? "track";
 ```
 
 ```js
@@ -144,7 +217,8 @@ const scatter = view(BrushableScatterPlot(viewData, {
   x: "x",
   y: "y",
   id: "id",
-  color: "track",
+  color: colorBy,
+  colorScheme: colorBy === "trustworthiness" || colorBy === "continuity" ? "viridis" : undefined,
   tooltip: ["title", "authors", "track"],
   width: 720,
   height: 480,

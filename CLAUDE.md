@@ -150,3 +150,4 @@ Check zadu-js first (`docs/research/zadu-js.md`). If not in zadu-js and importan
 1. Read the corresponding doc in `docs/research/`.
 2. Look at `docs/umap-playground.tgz` for the canonical example.
 3. Ask the user rather than guess.
+4. When stuck, output your current hypothesis before making changes

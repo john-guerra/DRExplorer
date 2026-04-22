@@ -236,6 +236,156 @@ display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
 </div>`);
 ```
 
+## Refine a region
+
+Brush a region in the scatter above, then press the button. DR re-runs on just
+the brushed subset — useful for "I see a cluster in UMAP, but zoom in on it and
+it's actually two sub-clusters". The refined scatter shows the local embedding,
+and T/C metrics for it tell you whether the focus helped.
+
+```js
+const refineBtn = view(Inputs.button([
+  ["🔍 Refine brushed region", () => "refine"],
+  ["↺ Reset", () => "idle"],
+], { value: "idle" }));
+```
+
+```js
+// Trigger only when user explicitly asks and there's a selection. Captures
+// the brushed ids at click time so later brush changes don't invalidate the
+// in-flight refinement.
+const refineSelection = (() => {
+  if (refineBtn !== "refine") return null;
+  const ids = new Set((scatter?.brushed ?? []).map((d) => d.id));
+  if (ids.size < 10) return { err: `need at least 10 points (got ${ids.size})` };
+  const rows = sampledData.filter((d) => ids.has(d.id));
+  return { ids, rows };
+})();
+```
+
+```js
+const refineStatus = (async function* () {
+  if (!refineSelection) {
+    yield { status: "Idle", embedding: [], rows: [] };
+    return;
+  }
+  if (refineSelection.err) {
+    yield { status: "Error", error: refineSelection.err, embedding: [], rows: [] };
+    return;
+  }
+  const matrix = refineSelection.rows.map((d) => d.embedding);
+  const ac = new AbortController();
+  invalidation.then(() => ac.abort());
+  const iter = runInWorker(drFit, {
+    matrix,
+    algo: config.algo,
+    params: config.params,
+    showDynamic: config.showDynamic,
+    yieldEvery: 5,
+  }, {
+    type: "module",
+    preamble: DR_WORKER_PREAMBLE,
+    signal: ac.signal,
+  });
+  for await (const tick of iter) {
+    if (tick?.__error__) {
+      yield { status: "Error", error: tick.message, embedding: [], rows: refineSelection.rows };
+      return;
+    }
+    yield { ...tick, rows: refineSelection.rows };
+  }
+})();
+```
+
+```js
+const refineMetricsStatus = (async function* () {
+  if (refineStatus?.status !== "Finished" || !refineStatus.embedding?.length) {
+    yield { status: "Idle", result: null };
+    return;
+  }
+  const hd = refineStatus.rows.map((d) => d.embedding);
+  const ld = refineStatus.embedding;
+  const k = Math.min(metricsK, Math.floor(hd.length / 2));
+  if (k < 2) {
+    yield { status: "Error", error: `selection too small for k=${metricsK} (have ${hd.length})`, result: null };
+    return;
+  }
+  const ac = new AbortController();
+  invalidation.then(() => ac.abort());
+  yield { status: "Starting", result: null };
+  const iter = runInWorker(computeMetrics, { hd, ld, k }, {
+    type: "module",
+    preamble: METRICS_WORKER_PREAMBLE,
+    signal: ac.signal,
+  });
+  for await (const tick of iter) {
+    if (tick?.__error__) {
+      yield { status: "Error", error: tick.message, result: null };
+      return;
+    }
+    yield {
+      status: tick.status,
+      currentMetric: tick.metric,
+      result: tick.result ?? tick.partial ?? null,
+      k,
+    };
+  }
+})();
+```
+
+```js
+display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;display:flex;gap:1em;flex-wrap:wrap;">
+  <span><strong>Refine:</strong> ${refineStatus?.status ?? "Idle"}${refineStatus?.error ? ` — ${refineStatus.error}` : ""}</span>
+  ${refineStatus?.targetEpoch ? html`<span>Epoch ${refineStatus.currentEpoch} / ${refineStatus.targetEpoch}</span>` : ""}
+  <span><strong>Metrics:</strong> ${refineMetricsStatus?.status ?? "Idle"}</span>
+</div>`);
+```
+
+```js
+const refineViewData = (refineStatus?.embedding ?? []).map((xy, i) => {
+  const src = refineStatus.rows[i];
+  const t = refineMetricsStatus?.result?.trustworthiness?.localScores?.[i];
+  const c = refineMetricsStatus?.result?.continuity?.localScores?.[i];
+  return {
+    ...src,
+    x: xy[0],
+    y: xy[1],
+    ...(t !== undefined ? { trustworthiness: t } : {}),
+    ...(c !== undefined ? { continuity: c } : {}),
+  };
+});
+```
+
+```js
+const refineScatter = refineViewData.length > 0
+  ? await BrushableScatterPlot(refineViewData, {
+      x: "x", y: "y", id: "id",
+      color: colorBy,
+      colorScheme: colorBy === "trustworthiness" || colorBy === "continuity" ? "viridis" : undefined,
+      tooltip: ["title", "authors", "track"],
+      width: 560,
+      height: 360,
+    })
+  : html`<em style="color:var(--theme-foreground-muted);">Brush a region in the scatter above, then press Refine.</em>`;
+display(refineScatter);
+```
+
+```js
+// Side-by-side metric comparison: full-run T/C vs refined T/C. Shows whether
+// zooming in on the cluster improved local neighborhood preservation.
+display(html`<div style="display:flex;gap:2em;color:var(--theme-foreground-muted);font-size:.85em;margin-top:.5em;">
+  <div><strong>Full run:</strong>
+    T ${metricsStatus?.result?.trustworthiness?.score?.toFixed(3) ?? "—"} ·
+    C ${metricsStatus?.result?.continuity?.score?.toFixed(3) ?? "—"}
+  </div>
+  <div><strong>Refined:</strong>
+    T ${refineMetricsStatus?.result?.trustworthiness?.score?.toFixed(3) ?? "—"} ·
+    C ${refineMetricsStatus?.result?.continuity?.score?.toFixed(3) ?? "—"}
+    ${refineMetricsStatus?.k ? ` (k=${refineMetricsStatus.k})` : ""}
+  </div>
+</div>`);
+```
+
 ## Saved runs
 
 ```js

@@ -1,6 +1,15 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    alias: [
+      // Observable Framework compiles `npm:foo` → a self-hosted jsDelivr
+      // bundle. Vitest doesn't understand the specifier, so map it back to
+      // the plain npm package for tests. Matches any `npm:<pkg>` import in
+      // source files.
+      { find: /^npm:(.*)$/, replacement: "$1" },
+    ],
+  },
   test: {
     // Tests live under test/ mirroring src/ (e.g., test/lib/procrustes.test.js).
     include: ["test/**/*.test.js"],

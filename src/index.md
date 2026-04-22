@@ -7,7 +7,7 @@ import { dataInput } from "./components/data-input.js";
 import { BrushableScatterPlot } from "./components/brushable-scatter.js";
 import { navio } from "./components/navio.js";
 import { drControls } from "./components/dr-controls.js";
-import { runList } from "./components/run-list.js";
+import { runGallery } from "./components/run-gallery.js";
 import { metricsPanel } from "./components/metrics-panel.js";
 import { scentedCheckbox } from "./components/scented-checkbox.js";
 import { scatterControls } from "./components/scatter-controls.js";
@@ -15,7 +15,8 @@ import { searchCheckbox } from "./components/search-checkbox.js";
 import { runInWorker } from "./lib/worker-helper.js";
 import { drFit, DR_WORKER_PREAMBLE } from "./lib/dr-worker.js";
 import { computeMetrics, METRICS_WORKER_PREAMBLE } from "./lib/metrics-worker.js";
-import { saveRun, exportRuns, importRuns } from "./lib/run-store.js";
+import { saveRun, exportRuns, importRuns, deleteRun } from "./lib/run-store.js";
+import { alignAndMerge } from "./lib/merge-refinement.js";
 ```
 
 ## Load data
@@ -207,12 +208,16 @@ const metricsK = view(Inputs.range([5, 50], { value: 15, step: 1, label: "Metric
 
 ```js
 const metricsStatus = (async function* () {
-  if (runStatus?.status !== "Finished" || !runStatus.embedding?.length) {
+  // Metrics score whatever currentEmbedding currently holds — so a refine
+  // or thumbnail-load re-scores the view, not just a fresh DR run. Wait for
+  // the fresh run to reach Finished at least once before we bother, since
+  // metrics on a half-iterated t-SNE / UMAP are meaningless churn.
+  const ld = currentEmbedding;
+  if (runStatus?.status !== "Finished" || !ld?.length) {
     yield { status: "Idle", result: null };
     return;
   }
   const hd = drMatrix;
-  const ld = runStatus.embedding;
   if (!hd.length || hd.length !== ld.length) {
     yield { status: "Error", error: "hd/ld length mismatch", result: null };
     return;
@@ -255,12 +260,34 @@ display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
 ## Scatter
 
 ```js
+// currentEmbedding is the single source of truth for what the scatter
+// displays. Four writers update it (each in its own cell, via setEmbedding):
+//   1. fresh DR ticks       → overwrite all rows
+//   2. refine completion    → Procrustes-aligned overwrite of brushed rows
+//   3. thumbnail click      → overwrite all rows from the saved run
+//   4. selectedTracks / sampledData change → reset to runStatus.embedding
+// setEmbedding exists in the same cell so writers from elsewhere can
+// inherit the write privilege.
+const currentEmbedding = Mutable([]);
+const setEmbedding = (e) => { currentEmbedding.value = Array.isArray(e) ? e : []; };
+```
+
+```js
+// Fresh-run writer: on every runStatus tick, overwrite currentEmbedding
+// so the scatter animates during iteration. When runStatus is Idle /
+// Baseline it still holds a valid embedding for the rows, so this writes
+// unconditionally.
+{
+  if (runStatus?.embedding?.length) setEmbedding(runStatus.embedding);
+}
+```
+
+```js
 // Merge the current embedding into the tidy rows so the scatter sees
-// { ...d, x, y } with fresh coords. Fall back to d.x / d.y (baseline) if the
-// run hasn't produced coords for a given row yet. Also attach per-point
-// metric scores so the color channel can pick them up.
+// { ...d, x, y }. Also attach per-point metric scores so the color channel
+// can pick them up.
 const viewData = sampledData.map((d, i) => {
-  const xy = runStatus?.embedding?.[i];
+  const xy = currentEmbedding[i];
   const coords = xy ? { x: xy[0], y: xy[1] } : null;
   const t = metricsStatus?.result?.trustworthiness?.localScores?.[i];
   const c = metricsStatus?.result?.continuity?.localScores?.[i];
@@ -354,25 +381,45 @@ display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
 
 ## Refine a region
 
-Brush a region in the scatter above, then press the button. DR re-runs on just
-the brushed subset — useful for "I see a cluster in UMAP, but zoom in on it and
-it's actually two sub-clusters". The refined scatter shows the local embedding,
-and T/C metrics for it tell you whether the focus helped.
+Brush a region in the scatter, then press Refine. DR re-runs on just the
+brushed subset and the result is Procrustes-aligned back into the main
+view — so the refined cluster lands where it was on the canvas but its
+internal structure reflects the local re-embedding. Useful for "I see a
+cluster in UMAP, but zoom in on it and it's actually two sub-clusters".
 
 ```js
-const refineBtn = view(Inputs.button([
-  ["🔍 Refine brushed region", () => "refine"],
-  ["↺ Reset", () => "idle"],
-], { value: "idle" }));
+// refineRequest is the single source of truth for "what to refine right
+// now". Declared in a cell that has NO reactive dependency on `scatter`
+// so that scatter rebuilds (caused by every embedding tick) don't reset
+// the Mutable back to null. The button cell below imports `requestRefine`
+// and reads scatter.brushed at click time.
+const refineRequest = Mutable(null);
+const requestRefine = (ids) => { refineRequest.value = ids?.length ? ids : null; };
+const clearRefineRequest = () => { refineRequest.value = null; };
 ```
 
 ```js
-// Trigger only when user explicitly asks and there's a selection. Captures
-// the brushed ids at click time so later brush changes don't invalidate the
-// in-flight refinement.
+// Button cell — does depend on scatter (via the click handler's brushed
+// snapshot). That's fine: when scatter rebuilds and this cell re-runs,
+// we just get fresh button DOM; the refineRequest Mutable from the cell
+// above is untouched, so any in-flight refine state survives.
+const refineBtnEl = htl.html`<button type="button" style="margin-right:.25em;">🔍 Refine brushed region</button>`;
+refineBtnEl.addEventListener("click", () => {
+  const brushedIds = (scatter?.brushed ?? []).map((d) => d.id);
+  requestRefine(brushedIds);
+});
+const refineResetEl = htl.html`<button type="button">↺ Reset</button>`;
+refineResetEl.addEventListener("click", () => clearRefineRequest());
+display(html`<div>${refineBtnEl} ${refineResetEl}</div>`);
+```
+
+```js
+// refineSelection derives from refineRequest (stable across scatter
+// rebuilds) and sampledData (the ID universe). Clicking Refine when no
+// rows are brushed, or fewer than 10 rows, reports an error state.
 const refineSelection = (() => {
-  if (refineBtn !== "refine") return null;
-  const ids = new Set((scatter?.brushed ?? []).map((d) => d.id));
+  if (!refineRequest) return null;
+  const ids = new Set(refineRequest);
   if (ids.size < 10) return { err: `need at least 10 points (got ${ids.size})` };
   const rows = sampledData.filter((d) => ids.has(d.id));
   return { ids, rows };
@@ -422,129 +469,79 @@ const refineStatus = (async function* () {
 ```
 
 ```js
-const refineMetricsStatus = (async function* () {
-  if (refineStatus?.status !== "Finished" || !refineStatus.embedding?.length) {
-    yield { status: "Idle", result: null };
-    return;
-  }
-  const hd = hasEmbedding
-    ? refineStatus.rows.map((d) => d.embedding)
-    : refineStatus.rows.map((d) => selectedColumns.map((c) => +d[c]));
-  const ld = refineStatus.embedding;
-  const k = Math.min(metricsK, Math.floor(hd.length / 2));
-  if (k < 2) {
-    yield { status: "Error", error: `selection too small for k=${metricsK} (have ${hd.length})`, result: null };
-    return;
-  }
-  const ac = new AbortController();
-  invalidation.then(() => ac.abort());
-  yield { status: "Starting", result: null };
-  const iter = runInWorker(computeMetrics, { hd, ld, k }, {
-    type: "module",
-    preamble: METRICS_WORKER_PREAMBLE,
-    signal: ac.signal,
-  });
-  for await (const tick of iter) {
-    if (tick?.__error__) {
-      yield { status: "Error", error: tick.message, result: null };
-      return;
-    }
-    yield {
-      status: tick.status,
-      currentMetric: tick.metric,
-      result: tick.result ?? tick.partial ?? null,
-      k,
-    };
-  }
-})();
-```
-
-```js
 display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;display:flex;gap:1em;flex-wrap:wrap;">
   <span><strong>Refine:</strong> ${refineStatus?.status ?? "Idle"}${refineStatus?.error ? ` — ${refineStatus.error}` : ""}</span>
   ${refineStatus?.targetEpoch ? html`<span>Epoch ${refineStatus.currentEpoch} / ${refineStatus.targetEpoch}</span>` : ""}
-  <span><strong>Metrics:</strong> ${refineMetricsStatus?.status ?? "Idle"}</span>
+  ${refineStatus?.status === "Finished" && refineSelection ? html`<span>merged <strong>${refineSelection.ids.size}</strong> points back into the view</span>` : ""}
 </div>`);
 ```
 
 ```js
-const refineViewData = (refineStatus?.embedding ?? []).map((xy, i) => {
-  const src = refineStatus.rows[i];
-  const t = refineMetricsStatus?.result?.trustworthiness?.localScores?.[i];
-  const c = refineMetricsStatus?.result?.continuity?.localScores?.[i];
-  return {
-    ...src,
-    x: xy[0],
-    y: xy[1],
-    ...(t !== undefined ? { trustworthiness: t } : {}),
-    ...(c !== undefined ? { continuity: c } : {}),
-  };
-});
+// Writer cell: when the refine worker reaches Finished, Procrustes-align
+// the refined subset onto its current positions and fold back into
+// currentEmbedding. The main scatter re-renders with the local structure.
+//
+// Idempotency: this cell re-runs whenever currentEmbedding changes (because
+// it reads it to merge). To avoid re-merging the same refineStatus in a
+// loop (merge → currentEmbedding changes → this cell re-runs → merge again),
+// we track the exact refineStatus reference we last processed in a
+// module-scope Set and early-return on repeats.
+const _processedRefines = new WeakSet();
+{
+  if (
+    refineStatus?.status === "Finished" &&
+    refineStatus.embedding?.length > 0 &&
+    refineSelection?.ids &&
+    !_processedRefines.has(refineStatus)
+  ) {
+    _processedRefines.add(refineStatus);
+    const brushedIds = Array.from(refineSelection.ids);
+    const allIds = sampledData.map((d) => d.id);
+    const merged = alignAndMerge({
+      currentEmbedding,
+      allIds,
+      refinedEmbedding: refineStatus.embedding,
+      brushedIds,
+    });
+    setEmbedding(merged);
+  }
+}
 ```
 
-```js
-const refineScatter = refineViewData.length > 0
-  ? await BrushableScatterPlot(refineViewData, {
-      x: "x", y: "y", id: "id",
-      color: effectiveColor,
-      size: encodings?.size ?? null,
-      colorScheme:
-        effectiveColor === "trustworthiness" || effectiveColor === "continuity"
-          ? "viridis"
-          : undefined,
-      tooltip: ["title", "authors", "track"],
-      width: 560,
-      height: 360,
-      vegaSpecWrapper: withOpacity(encodings?.opacity),
-    })
-  : html`<em style="color:var(--theme-foreground-muted);">Brush a region in the scatter above, then press Refine.</em>`;
-display(refineScatter);
-```
+## Checkpoints
+
+Click **Checkpoint** to save the current scatter state (whatever you're
+looking at — fresh run, refined, or loaded from a thumbnail below). Each
+checkpoint lands in the strip at the bottom of the page; click a thumbnail
+to load its embedding back into the main scatter.
 
 ```js
-// Side-by-side metric comparison: full-run T/C vs refined T/C. Shows whether
-// zooming in on the cluster improved local neighborhood preservation.
-display(html`<div style="display:flex;gap:2em;color:var(--theme-foreground-muted);font-size:.85em;margin-top:.5em;">
-  <div><strong>Full run:</strong>
-    T ${metricsStatus?.result?.trustworthiness?.score?.toFixed(3) ?? "—"} ·
-    C ${metricsStatus?.result?.continuity?.score?.toFixed(3) ?? "—"}
-  </div>
-  <div><strong>Refined:</strong>
-    T ${refineMetricsStatus?.result?.trustworthiness?.score?.toFixed(3) ?? "—"} ·
-    C ${refineMetricsStatus?.result?.continuity?.score?.toFixed(3) ?? "—"}
-    ${refineMetricsStatus?.k ? ` (k=${refineMetricsStatus.k})` : ""}
-  </div>
-</div>`);
-```
-
-## Saved runs
-
-```js
-// savedCount owns the refresh signal. Save / delete / import all write to
-// its .value, which triggers any cell that references `savedCount` to
-// re-run. Mutables can only be written from their declaring cell, so the
-// save / export / import buttons live in this same block.
+// savedCount owns the refresh signal for the gallery. Checkpoint /
+// delete / import all write to its .value so any cell that references
+// savedCount re-runs. Gallery is declared here in the same cell so its
+// thumbnail-delete handler inherits the write privilege.
 const savedCount = Mutable(0);
+const bumpSaved = () => { savedCount.value = savedCount.value + 1; };
 
-const saveBtn = Inputs.button("💾 Save run", {
+const checkpointBtn = Inputs.button("📌 Checkpoint current view", {
   value: 0,
   reduce: (v) => {
-    if (runStatus?.status !== "Finished") return v;
+    if (!currentEmbedding?.length) return v;
     saveRun({
-      name: `${runStatus.algo} · ${new Date().toLocaleTimeString()} · n=${sampledData.length}`,
+      name: `${runStatus?.algo ?? "precomputed"} · ${new Date().toLocaleTimeString()} · n=${sampledData.length}`,
       datasetId: "chi2026",
-      algo: runStatus.algo,
-      params: config.params,
-      embedding: runStatus.embedding,
+      algo: runStatus?.algo ?? "precomputed",
+      params: config?.params ?? {},
+      embedding: currentEmbedding,
       ids: sampledData.map((d) => d.id),
       metrics: metricsStatus?.result ?? null,
     });
-    savedCount.value = savedCount.value + 1;
+    bumpSaved();
     return v + 1;
   },
 });
 
-const exportBtn = Inputs.button("⤓ Export runs as JSON", {
+const exportBtn = Inputs.button("⤓ Export as JSON", {
   value: 0,
   reduce: (v) => {
     const blob = new Blob([exportRuns()], { type: "application/json" });
@@ -557,30 +554,48 @@ const exportBtn = Inputs.button("⤓ Export runs as JSON", {
   },
 });
 
-const importPicker = Inputs.file({ label: "⤒ Import runs", accept: ".json" });
+const importPicker = Inputs.file({ label: "⤒ Import", accept: ".json" });
 importPicker.addEventListener("input", async () => {
   const f = importPicker.value;
   if (!f) return;
-  const n = importRuns(await f.text(), { merge: true });
-  savedCount.value = savedCount.value + 1;
+  importRuns(await f.text(), { merge: true });
+  bumpSaved();
 });
 
 display(html`<div style="display:flex;gap:.5em;align-items:center;flex-wrap:wrap;margin:.5em 0;">
-  ${saveBtn} ${exportBtn} ${importPicker}
+  ${checkpointBtn} ${exportBtn} ${importPicker}
+  <span style="color:var(--theme-foreground-muted);font-size:.85em;">
+    ${savedCount} checkpoint${savedCount === 1 ? "" : "s"}
+    ${currentEmbedding?.length ? "· ready to save" : "· no embedding yet"}
+  </span>
 </div>`);
 ```
 
 ```js
-// refreshToken reference keeps this cell reactive to savedCount changes.
-const picked = view(runList({ refreshToken: savedCount }));
+// Gallery cell — runGallery reads localStorage (via listRuns) on every
+// refreshToken bump. Clicking a thumb emits a `run` as .value; the cell
+// below watches that and loads the run's embedding into currentEmbedding.
+const pickedRun = view(runGallery({
+  refreshToken: savedCount,
+  onDelete: (id) => { deleteRun(id); bumpSaved(); },
+}));
 ```
 
 ```js
-display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
-  Selected run: ${picked?.name ?? "none"} ·
-  Total saved: ${savedCount}
-  ${runStatus?.status === "Finished" ? "· save armed" : "· run DR to arm save"}
-</div>`);
+// Writer cell: on thumbnail click, overwrite currentEmbedding with the
+// clicked run's embedding. Align by ids (in case the saved run's row
+// order differs from the current sampledData — e.g., filter changed).
+// Idempotent via WeakSet on the pickedRun reference so the cell doesn't
+// re-run on its own setEmbedding writeback.
+const _loadedRuns = new WeakSet();
+{
+  if (pickedRun?.embedding?.length && !_loadedRuns.has(pickedRun)) {
+    _loadedRuns.add(pickedRun);
+    const runById = new Map((pickedRun.ids ?? []).map((id, i) => [id, pickedRun.embedding[i]]));
+    const next = sampledData.map((d, i) => runById.get(d.id) ?? [0, 0]);
+    setEmbedding(next);
+  }
+}
 ```
 
 ---

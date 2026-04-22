@@ -313,6 +313,15 @@ async function BrushableScatterPlot(dataToPlot, options) {
 
 function _getVegaView(vl){return(
 function getVegaView(dataToPlot, options) {
+  // Adapted from the user's chi2026 paper explorer getVegaView. Key
+  // difference from the upstream notebook: we do NOT override
+  // `selectInterval.on()` / `.translate()`. Those overrides were the
+  // bug — they replaced Vega-Lite's default "mousedown→drag→mouseup
+  // creates a live rectangle" behaviour with translate-only, so the
+  // brush either grabbed nothing or everything depending on timing.
+  // With the overrides removed, drag creates the expected rectangle
+  // and the grey-when-not-selected condition on color gives visual
+  // feedback.
   let {
     interactive,
     colorScheme,
@@ -325,41 +334,38 @@ function getVegaView(dataToPlot, options) {
     tooltip,
     colorDomain,
     title,
-    shapeDomain
+    shapeDomain,
   } = options;
 
-  let colorField = vl.color();
-
-  if (dataToPlot.length && isNaN(dataToPlot[0][color])) {
+  // Colour scale — nominal vs. quantitative based on row 0's value for
+  // the chosen field.
+  if (dataToPlot.length && color && isNaN(dataToPlot[0][color])) {
     options.colorType = options.colorType || "nominal";
   } else {
     options.colorType = options.colorType || "quantitative";
   }
-
   colorScheme =
     colorScheme ||
     (options.colorType === "quantitative"
       ? options.colorSchemeQuantitative
       : options.colorSchemeNominal);
 
-  colorField = colorField
-    .field(color)
-    .type(options.colorType)
-    .scale({ scheme: colorScheme });
+  let colorField = color
+    ? vl
+        .color()
+        .field(color)
+        .type(options.colorType)
+        .scale({ scheme: colorScheme, domain: colorDomain })
+    : null;
 
   let chart = vl
-    .markPoint({
-      opacity: 0.6,
-      filled: true,
-      size: 100,
-      // tooltip: true
-    }) // Changed size to a default value of 100 for all points
+    .markPoint({ opacity: 0.6, filled: true, size: 100 })
     .encode(vl.x().fieldQ(x).axis(null), vl.y().fieldQ(y).axis(null))
     .width(options.width)
     .height(options.height)
     .data(dataToPlot);
 
-  if (color) chart = chart.encode(colorField);
+  if (colorField) chart = chart.encode(colorField);
 
   if (size) {
     if (typeof size === "number") {
@@ -367,77 +373,66 @@ function getVegaView(dataToPlot, options) {
     } else {
       chart = chart.encode(
         vl.size().fieldQ(size).scale({ range: options.sizeRange }),
-        vl.order().fieldQ(size)
+        vl.order().fieldQ(size),
       );
     }
   }
 
   if (shape) {
     let shapeEncoding = vl.shape().fieldN(shape);
-    if (shapeDomain) {
-      shapeEncoding = shapeEncoding.scale({ domain: shapeDomain });
-    }
+    if (shapeDomain) shapeEncoding = shapeEncoding.scale({ domain: shapeDomain });
     chart = chart.encode(shapeEncoding);
   }
 
-  const events = "mouseover,pointerover,touchmove,touchend,click"; // Added touch events to improve mobile interactions
-
-  if (interactive) {
-    // console.log("vega interactive!", interactive);
-    const hover = vl
-      .selectPoint("hover")
-      // .nearest(true)
-      .on(events)
-      .clear("none")
-      .init({ x: [], y: [] });
-
-    //added functionality on mobile devices enabling dragging interactions using mouse or touch events
-    const drag = vl
-      // Creates an interval selection named "drag" to allow users to interact with the chart by defining a rectangular selection
-      .selectInterval("drag")
-      // Configures the drag behavior to work with both mouse and mobile devices.
-      // Listens for drag initiation via mousedown or touchstart,
-      // drag movement via mousemove or touchmove,
-      // and drag completion via mouseup or touchend events.
-      .on(
-        "[mousedown, window:mouseup] > window:mousemove!, [touchstart, window:touchend] > window:touchmove!"
-      )
-      .translate(
-        "[mousedown, window:mouseup] > window:mousemove!, [touchstart, window:touchend] > window:touchmove!"
-      );
-
-    const click = vl
-      .selectPoint("click")
-      .fields([id])
-      // .nearest(true)
-      .on("click, touchend")
-      .init({ id: [] });
-
-    if (tooltip) {
-      console.log("🤙🏼 getvegaView tooltip", tooltip, dataToPlot);
-      chart = chart.encode(vl.tooltip(tooltip));
-    }
-
-    chart = chart
-      .encode(
-        vl
-          .stroke()
-          // .condition({ param: "click", value: "black", empty: false })
-          .condition({ param: "hover", value: "grey", empty: false })
-          .value(null)
-        // vl.size().if(vl.or(hover, drag), vl.value(80)).value(50)
-      )
-      .params(click, hover, drag);
-
-    if (color) {
-      const colorCondition = options.colorOnHover ? vl.or(hover, drag) : drag;
-      chart = chart.encode(
-        vl.color().if(colorCondition, colorField).value("grey")
-      );
-    }
+  if (!interactive) {
+    return chart.title(title);
   }
-  console.log("chart", chart.toSpec());
-  return chart.title(title).width(options.width).height(options.height);
+
+  // Selection parameters. vl.selectInterval() without .on()/.translate()
+  // overrides falls back to Vega-Lite's default stream, which is the
+  // standard "mousedown drag mouseup creates a rectangle" affordance.
+  const hover = vl
+    .selectPoint("hover")
+    .nearest(true)
+    .on("mouseover,pointerover,touchmove")
+    .clear("mouseout")
+    .init({ x: [], y: [] });
+  const drag = vl.selectInterval("drag");
+  const click = vl
+    .selectPoint("click")
+    .fields([id])
+    .nearest(true)
+    .on("click,touchend")
+    .init({ id: [] });
+  const shiftClick = vl
+    .selectPoint("shiftClick")
+    .fields([id])
+    .on("click[event.altKey]")
+    .toggle("false")
+    .init({ id: [] });
+
+  if (tooltip) chart = chart.encode(vl.tooltip(tooltip));
+
+  chart = chart
+    .params(click, shiftClick, hover, drag)
+    .encode(
+      vl
+        .stroke()
+        .condition({ param: "click", value: "black", empty: false })
+        .value(null),
+    );
+
+  if (colorField) {
+    // When a selection is active, paint selected points with the real
+    // colour scale and unselected points grey. `colorOnHover` widens
+    // the selection to also include the nearest-hover point.
+    const colorCondition = options.colorOnHover ? vl.or(hover, drag) : drag;
+    chart = chart.encode(
+      vl.color().if(colorCondition, colorField).value("grey"),
+    );
+  }
+
+  return chart.title(title);
 }
 )}
 

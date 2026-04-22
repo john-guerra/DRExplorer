@@ -20,6 +20,42 @@
 export const DR_WORKER_PREAMBLE = `
 import * as druid from "https://cdn.jsdelivr.net/npm/@saehrimnir/druidjs@0.8.0/+esm";
 globalThis.druid = druid;
+// Metric functions. druid's ESM bundle doesn't re-export these, so we inline
+// textbook implementations. Numerically simpler than druid's internal versions
+// (no neumair summation) but identical for the scale of data we handle.
+globalThis.drMetrics = {
+  euclidean: (a, b) => {
+    let s = 0;
+    for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; }
+    return Math.sqrt(s);
+  },
+  euclidean_squared: (a, b) => {
+    let s = 0;
+    for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; }
+    return s;
+  },
+  manhattan: (a, b) => {
+    let s = 0;
+    for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]);
+    return s;
+  },
+  chebyshev: (a, b) => {
+    let m = 0;
+    for (let i = 0; i < a.length; i++) {
+      const d = Math.abs(a[i] - b[i]);
+      if (d > m) m = d;
+    }
+    return m;
+  },
+  cosine: (a, b) => {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i];
+    }
+    const denom = Math.sqrt(na) * Math.sqrt(nb);
+    return denom === 0 ? 0 : 1 - dot / denom;
+  },
+};
 `;
 
 export function* drFit({ matrix, algo, params = {}, showDynamic = true, yieldEvery = 5 }) {
@@ -58,12 +94,18 @@ export function* drFit({ matrix, algo, params = {}, showDynamic = true, yieldEve
   const Cls = druid[algo];
   if (!Cls) throw new Error(`druid.js has no algorithm called "${algo}" (known: ${Object.keys(druid).filter(k => /^[A-Z]/.test(k)).slice(0, 25).join(", ")})`);
 
-  // druid expects `metric` to be a function, not a string. Its bundled ESM
-  // doesn't re-export metric functions at top level, so for v1 we strip
-  // string-valued `metric` — druid then uses its default (euclidean for UMAP,
-  // euclidean_squared for t-SNE). Custom metrics land in v2.
+  // Map string metric names → functions. druid expects a callable metric,
+  // and its bundled ESM doesn't re-export metric functions, so we bind
+  // against globalThis.drMetrics from the preamble.
   const cleanParams = { ...params };
-  if (typeof cleanParams.metric === "string") delete cleanParams.metric;
+  if (typeof cleanParams.metric === "string") {
+    const metricFn = globalThis.drMetrics?.[cleanParams.metric];
+    if (!metricFn) {
+      const known = Object.keys(globalThis.drMetrics ?? {}).join(", ");
+      throw new Error(`Unknown metric "${cleanParams.metric}" (known: ${known})`);
+    }
+    cleanParams.metric = metricFn;
+  }
 
   yield {
     algo, status: "Constructing", currentEpoch: 0, targetEpoch: 0,

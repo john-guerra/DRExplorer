@@ -214,7 +214,10 @@ const colorBy = metricsPick?.colorBy ?? "track";
 ```
 
 ```js
-const scatter = view(BrushableScatterPlot(viewData, {
+// BrushableScatterPlot resolves to an HTMLElement asynchronously (the widget
+// factory does a Vega-Lite render internally). Framework awaits the promise
+// at the cell boundary so downstream cells see the real element.
+const scatter = view(await BrushableScatterPlot(viewData, {
   x: "x",
   y: "y",
   id: "id",

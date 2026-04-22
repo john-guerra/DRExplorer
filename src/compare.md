@@ -63,7 +63,7 @@ function rowsFor(run) {
 // reference to the Mutable). It also needs to *read* the current value to
 // paint, but we accept `brushedSet` as an explicit parameter so the caller's
 // cell tracks brushed as a reactive dependency.
-function makeScatter(run, brushedSet) {
+async function makeScatter(run, brushedSet) {
   if (!run) return html`<em>No run on this side yet</em>`;
   const rows = rowsFor(run);
   const hasBrush = brushedSet.size > 0;
@@ -71,7 +71,7 @@ function makeScatter(run, brushedSet) {
     ...d,
     brushed: hasBrush ? (brushedSet.has(d.id) ? 1 : 0) : 0.5,
   }));
-  const widget = BrushableScatterPlot(colored, {
+  const widget = await BrushableScatterPlot(colored, {
     x: "x", y: "y", id: "id",
     color: hasBrush ? "brushed" : undefined,
     colorScheme: "blues",

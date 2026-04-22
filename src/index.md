@@ -452,29 +452,6 @@ display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
 </div>`);
 ```
 
-## Worker smoke test
-
-Proof that the worker pipeline works end-to-end. The button spawns a worker that iterates and streams progress back through the reactive graph.
-
-```js
-const workerButton = Inputs.button("▶ Count to 100 in a worker");
-display(workerButton);
-```
-
-```js
-const count = (async function* () {
-  workerButton;
-  const iter = runInWorker(function* main(n) {
-    for (let i = 0; i < n; i++) yield { i, sqrt: Math.sqrt(i) };
-  }, 100);
-  for await (const tick of iter) yield tick;
-})();
-```
-
-```js
-display(html`<div>Worker tick: <b>${count?.i ?? 0}</b> · √ = ${count?.sqrt?.toFixed(4) ?? "—"}</div>`);
-```
-
 ---
 
-See [Compare](./compare) for side-by-side run comparison (Phase 4).
+See [Compare](./compare) for side-by-side run comparison.

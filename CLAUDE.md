@@ -12,7 +12,7 @@ A browser-based dimensionality-reduction (DR) playground built on Observable Fra
 2. **All heavy compute runs in Web Workers.** If you are about to run a DR algorithm or compute zadu-js metrics on the main thread, stop — use `src/lib/worker-helper.js`.
 3. **Show distributions, not just scores.** When a metric has per-point scores, show a histogram. When comparing runs, show deltas as distributions, not just averages.
 4. **Runs are first-class objects** — id, name, timestamp, dataset id, algo, params, embedding, metrics. Never treat a run as ephemeral state bolted onto the page.
-5. **Never depend on remote Observable notebooks at runtime.** We bundle the Guerra widgets (`data-input`, `brushable-scatterplot`, `navio`) as local modules under `src/components/*/`. If you catch yourself adding `import define from "https://observablehq.com/…"`, stop.
+5. **Prefer local tarballs for Guerra widgets; dynamic Observable imports are OK when no tgz is available.** `data-input`, `brushable-scatterplot`, and `scented-checkbox` live under `src/components/*-notebook/` from their `.tgz` exports. When a widget isn't downloaded yet, `await import("https://api.observablehq.com/@john-guerra/<name>.js")` is the accepted fallback — see `src/components/search-checkbox.js` for the pattern. Keep the ratio tilted toward local so offline dev still works.
 
 ## Project structure
 
@@ -29,6 +29,7 @@ DRExplorer/
 │   ├── worker.tgz              (reference copies, don't delete)
 │   ├── data-input.tgz
 │   ├── brushable-scatterplot.tgz
+│   ├── scented-checkbox.tgz
 │   ├── umap-playground.tgz
 │   └── research/               (11 knowledge docs — see index below)
 └── src/
@@ -128,9 +129,10 @@ Check zadu-js first (`docs/research/zadu-js.md`). If not in zadu-js and importan
 
 ## Testing expectations
 
-- Worker helper (`src/lib/worker-helper.js`) gets a smoke test on the index page: spawn a tiny worker, iterate, display output.
-- Each reactive widget should boot in isolation — write a `src/demo-<component>.md` page for any non-trivial widget so we can test it standalone.
-- We do not yet have a formal test runner. Don't add Jest / Vitest until we actually have logic tests to write.
+- **Vitest is the test runner.** Tests live next to the code under `test/` mirroring `src/` (e.g., `test/lib/procrustes.test.js` for `src/lib/procrustes.js`). Run with `npm test`. Jsdom for anything that touches the DOM.
+- Every pure-logic utility under `src/lib/` should have a unit test: `worker-helper`, `run-store`, `procrustes`, `dr-worker.drFit` (mocked druid), `metrics-worker.computeMetrics` (mocked zadu).
+- Reactive widgets boot in isolation in a `src/demo-<component>.md` page for manual checks; automated tests for the widgets mount them in jsdom and assert on `.value` + `input` event contract.
+- Keep test run under 10 s. Heavy integration stuff (actual druid.js UMAP loop) goes behind a `describe.skip` or a `npm run test:integration` split if it ever matters.
 
 ## Deployment
 

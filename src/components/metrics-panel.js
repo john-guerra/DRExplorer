@@ -18,29 +18,10 @@ import * as Plot from "npm:@observablehq/plot";
 import * as htl from "npm:htl";
 import { reactiveWidget, dispatchInput } from "./reactive-widget.js";
 
-// ─── USER CONTRIBUTION SLOT ───────────────────────────────────────────────
-// Decide how many bins to use for the local-score distribution histogram.
-//
-// This is a UX call more than a math call — the histogram has to read well
-// for datasets of ~200 to ~3000 points. Options to consider:
-//
-//   (a) Fixed count (e.g. 20). Simple, consistent look across datasets,
-//       but may look under- or over-binned at the extremes.
-//   (b) Square-root rule: Math.ceil(Math.sqrt(n)). Classic default; scales
-//       smoothly with n. For n=200 → 15 bins, n=2700 → 52 bins.
-//   (c) Sturges: Math.ceil(Math.log2(n) + 1). Assumes roughly normal data;
-//       gives ~9 bins for n=200, ~12 for n=2700 — chunkier shapes.
-//   (d) Freedman-Diaconis: 2·IQR·n^(-1/3). Adaptive to spread, bins narrow
-//       for tight distributions, wider for spread. Most "statistically
-//       correct" but can produce very many or very few bins.
-//
-// The localScores array is usually left-skewed (most points have high T,
-// a long tail of distorted ones). We want the tail to be visible, but we
-// don't want 300 bins on a 2,700-point run.
-//
-// TODO: Implement chooseBinCount(n, localScores) returning an integer.
-// Keep it simple (5-10 lines). Clamp to a reasonable range so a pathological
-// input can't blow up the chart.
+// Histogram bin count via Freedman-Diaconis (2·IQR·n^(-1/3)). Adapts to
+// the spread of the distribution, clamped to [6, 50] so a pathological
+// input (IQR near zero or wild outliers) can't produce an unreadable
+// chart. localScores is usually left-skewed (most high, a long low tail).
 function chooseBinCount(n, localScores) {
   if (n < 2) return 6;
   const sorted = [...localScores].sort((a, b) => a - b);

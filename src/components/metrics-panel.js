@@ -80,7 +80,7 @@ function metricRow(name, result, pickedColorBy, onColorBy) {
   </div>`;
 }
 
-export function metricsPanel(result, { k = 20 } = {}) {
+export function metricsPanel(result, { k = 20, onColorBy: externalOnColorBy } = {}) {
   const container = htl.html`<div class="drexplorer-metrics-panel" style="display:flex;flex-direction:column;gap:.5em;"></div>`;
   const widget = reactiveWidget(container, { value: { colorBy: null } });
 
@@ -92,6 +92,11 @@ export function metricsPanel(result, { k = 20 } = {}) {
     const onColorBy = (name) => {
       widget.value = { colorBy: name };
       dispatchInput(widget);
+      // Optional side-channel: lets the caller (e.g., src/index.md) poke
+      // the scatter-controls widget directly so its color dropdown
+      // reflects this click. Keeps both reactive widgets in sync without
+      // a dedicated Framework cell.
+      if (externalOnColorBy) externalOnColorBy(name);
       render();
     };
     container.replaceChildren(

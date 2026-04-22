@@ -245,7 +245,16 @@ const metricsStatus = (async function* () {
 ```
 
 ```js
-const metricsPick = view(metricsPanel(metricsStatus?.result, { k: metricsK }));
+// Metrics panel: picking "Color scatter by this" on a metric row pokes
+// the scatter-controls widget's color dropdown directly via its
+// setEncoding hook. This keeps both reactive widgets in sync without a
+// dedicated Framework cell (which would create a feedback loop).
+const metricsPick = view(metricsPanel(metricsStatus?.result, {
+  k: metricsK,
+  onColorBy: (name) => {
+    if (scatterControlsEl?.setEncoding) scatterControlsEl.setEncoding("color", name);
+  },
+}));
 ```
 
 ```js
@@ -318,18 +327,31 @@ const encodingColumns = sampledData.length > 0
 ```
 
 ```js
-const encodings = view(scatterControls({
-  columns: encodingColumns,
-  defaults: { color: "track", size: null, opacity: null },
-}));
+// Metric columns — always offered as encoding options so the user can
+// assign trustworthiness or continuity to color / size / opacity even
+// when a specific row hasn't scored yet. The scatter just renders those
+// rows as "no value" until scores arrive.
+const METRIC_COLUMNS = ["trustworthiness", "continuity"];
 ```
 
 ```js
-// Metrics panel exposes {colorBy: "trustworthiness" | "continuity" | null}.
-// A non-null colorBy from the panel overrides the encodings picker for
-// color only (since the panel was designed around exposing metric
-// distributions on the scatter). Size/opacity always come from encodings.
-const effectiveColor = metricsPick?.colorBy ?? encodings?.color ?? null;
+// scatterControlsEl is held as a constant so we have a stable reference
+// to call setEncoding() on from the metrics panel's "Color by this"
+// button. Using view() would hide the element behind a generator.
+// Generators.input() on the same element gives us `encodings` as a
+// reactive value that tracks the widget's .value + input events — same
+// behaviour as view(), just with an explicit element reference.
+const scatterControlsEl = scatterControls({
+  columns: encodingColumns,
+  extraColumns: METRIC_COLUMNS,
+  defaults: { color: "track", size: null, opacity: null },
+});
+display(scatterControlsEl);
+const encodings = Generators.input(scatterControlsEl);
+```
+
+```js
+const effectiveColor = encodings?.color ?? null;
 ```
 
 ```js

@@ -10,3 +10,4 @@ src/.observablehq/cache/
 .playwright-mcp/
 package-lock.json
 
+.worktrees/

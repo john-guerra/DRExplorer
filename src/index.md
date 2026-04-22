@@ -12,6 +12,7 @@ import { metricsPanel } from "./components/metrics-panel.js";
 import { runInWorker } from "./lib/worker-helper.js";
 import { drFit, DR_WORKER_PREAMBLE } from "./lib/dr-worker.js";
 import { computeMetrics, METRICS_WORKER_PREAMBLE } from "./lib/metrics-worker.js";
+import { saveRun, exportRuns, importRuns } from "./lib/run-store.js";
 ```
 
 ## Load data
@@ -235,12 +236,66 @@ display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
 ## Saved runs
 
 ```js
-const picked = view(runList());
+// savedCount owns the refresh signal. Save / delete / import all write to
+// its .value, which triggers any cell that references `savedCount` to
+// re-run. Mutables can only be written from their declaring cell, so the
+// save / export / import buttons live in this same block.
+const savedCount = Mutable(0);
+
+const saveBtn = Inputs.button("💾 Save run", {
+  value: 0,
+  reduce: (v) => {
+    if (runStatus?.status !== "Finished") return v;
+    saveRun({
+      name: `${runStatus.algo} · ${new Date().toLocaleTimeString()} · n=${sampledData.length}`,
+      datasetId: "chi2026",
+      algo: runStatus.algo,
+      params: config.params,
+      embedding: runStatus.embedding,
+      ids: sampledData.map((d) => d.id),
+      metrics: metricsStatus?.result ?? null,
+    });
+    savedCount.value = savedCount.value + 1;
+    return v + 1;
+  },
+});
+
+const exportBtn = Inputs.button("⤓ Export runs as JSON", {
+  value: 0,
+  reduce: (v) => {
+    const blob = new Blob([exportRuns()], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `drexplorer-runs-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    return v + 1;
+  },
+});
+
+const importPicker = Inputs.file({ label: "⤒ Import runs", accept: ".json" });
+importPicker.addEventListener("input", async () => {
+  const f = importPicker.value;
+  if (!f) return;
+  const n = importRuns(await f.text(), { merge: true });
+  savedCount.value = savedCount.value + 1;
+});
+
+display(html`<div style="display:flex;gap:.5em;align-items:center;flex-wrap:wrap;margin:.5em 0;">
+  ${saveBtn} ${exportBtn} ${importPicker}
+</div>`);
 ```
 
 ```js
-display(htl.html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
-  Selected run: ${picked?.name ?? "none"} (saving runs lands in Phase 4)
+// refreshToken reference keeps this cell reactive to savedCount changes.
+const picked = view(runList({ refreshToken: savedCount }));
+```
+
+```js
+display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
+  Selected run: ${picked?.name ?? "none"} ·
+  Total saved: ${savedCount}
+  ${runStatus?.status === "Finished" ? "· save armed" : "· run DR to arm save"}
 </div>`);
 ```
 

@@ -51,6 +51,10 @@ export function saveRun(run) {
     algo: run.algo,
     params: run.params ?? {},
     embedding: run.embedding ?? [],
+    // ids aligns each embedding row with the source dataset row. Required
+    // for linked brushing on the compare page (lets us match the "same"
+    // point across two runs). Optional; defaults to positional indices.
+    ids: run.ids ?? (run.embedding ?? []).map((_, i) => i),
     metrics: run.metrics ?? null,
     notes: run.notes ?? "",
     createdAt: run.createdAt ?? Date.now(),

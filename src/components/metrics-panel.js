@@ -42,8 +42,16 @@ import { reactiveWidget, dispatchInput } from "./reactive-widget.js";
 // Keep it simple (5-10 lines). Clamp to a reasonable range so a pathological
 // input can't blow up the chart.
 function chooseBinCount(n, localScores) {
-  // PLACEHOLDER — replace with your choice. Fixed 20 for now.
-  return 20;
+  if (n < 2) return 6;
+  const sorted = [...localScores].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  const iqr = q3 - q1;
+  if (iqr === 0) return 10; // all scores collapsed; any bin count is lying
+  const binWidth = 2 * iqr * Math.pow(n, -1 / 3);
+  const range = sorted[sorted.length - 1] - sorted[0];
+  const bins = Math.ceil(range / binWidth);
+  return Math.max(6, Math.min(50, bins));
 }
 // ──────────────────────────────────────────────────────────────────────────
 

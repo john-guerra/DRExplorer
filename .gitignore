@@ -11,3 +11,4 @@ src/.observablehq/cache/
 package-lock.json
 
 .worktrees/
+.claude/

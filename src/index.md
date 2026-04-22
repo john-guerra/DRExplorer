@@ -356,20 +356,44 @@ const effectiveColor = encodings?.color ?? null;
 
 ```js
 // Opacity is not a native channel of @john-guerra/brushable-scatterplot; we
-// inject it via vegaSpecWrapper. If the user didn't pick an opacity
-// attribute, return the spec unchanged so the widget's hardcoded 0.6
-// opacity applies to all marks.
+// inject it via vegaSpecWrapper. The widget's wrapper contract is:
+// it receives a vega-lite-api *chain* (with a `.toSpec()` method), and
+// returns anything with a `.toSpec()` method that produces the final
+// JSON spec. We shim by wrapping the chain and mutating its JSON output
+// to add an opacity encoding. The mark-level `opacity: 0.6` in the
+// widget's markPoint() is overridden by the encoding-level opacity for
+// the visual channel.
 function withOpacity(attr) {
-  if (!attr) return (spec) => spec;
+  if (!attr) return (chain) => chain;
   const isNumeric = viewData.length > 0 && typeof viewData[0][attr] === "number";
-  return (spec) => {
-    const withEnc = { ...spec, encoding: { ...(spec.encoding ?? {}) } };
-    withEnc.encoding.opacity = {
-      field: attr,
-      type: isNumeric ? "quantitative" : "nominal",
-    };
-    return withEnc;
-  };
+  return (chain) => ({
+    toSpec: () => {
+      const spec = chain.toSpec();
+      // Traverse into the first layer with a markPoint — the widget uses
+      // a `.layer(...)` composition with the point layer carrying the
+      // encoding we want to augment. If no layers, encode on the top.
+      const addOpacity = (node) => {
+        if (!node || typeof node !== "object") return;
+        if (node.mark && (node.mark.type === "point" || node.mark === "point")) {
+          node.encoding = node.encoding ?? {};
+          node.encoding.opacity = {
+            field: attr,
+            type: isNumeric ? "quantitative" : "nominal",
+            legend: { title: attr },
+          };
+        }
+        if (Array.isArray(node.layer)) node.layer.forEach(addOpacity);
+        if (Array.isArray(node.concat)) node.concat.forEach(addOpacity);
+        if (Array.isArray(node.hconcat)) node.hconcat.forEach(addOpacity);
+        if (Array.isArray(node.vconcat)) node.vconcat.forEach(addOpacity);
+      };
+      addOpacity(spec);
+      return spec;
+    },
+    // render() is only used when interactive=false; delegate so the
+    // non-interactive branch still works.
+    render: (...args) => chain.render(...args),
+  });
 }
 ```
 

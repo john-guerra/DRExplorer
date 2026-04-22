@@ -6,3 +6,7 @@ src/.observablehq/cache/
 *.log
 .env
 .env.local
+
+.playwright-mcp/
+package-lock.json
+

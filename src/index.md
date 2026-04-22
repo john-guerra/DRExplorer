@@ -9,6 +9,7 @@ import { navio } from "./components/navio.js";
 import { drControls } from "./components/dr-controls.js";
 import { runList } from "./components/run-list.js";
 import { runInWorker } from "./lib/worker-helper.js";
+import { drFit, DR_WORKER_PREAMBLE } from "./lib/dr-worker.js";
 ```
 
 ## Load data
@@ -26,7 +27,6 @@ const userUpload = view(dataInput({
 ```
 
 ```js
-// Use upload if non-empty, otherwise fall back to the demo.
 const data = userUpload.length > 0 ? userUpload : demo.rows;
 ```
 
@@ -38,10 +38,103 @@ Loaded **${data.length}** rows with **${data.length ? Object.keys(data[0]).lengt
 const filteredData = view(navio(data, { height: 220 }));
 ```
 
-## Baseline scatter (precomputed UMAP)
+## DR controls
 
 ```js
-const scatter = view(BrushableScatterPlot(filteredData, {
+const config = view(drControls({ algo: "UMAP", showAdvanced: false }));
+```
+
+```js
+// Row sampling: pure-JS druid.js UMAP on 2,769 × 384 takes minutes for the
+// fuzzy simplicial kNN graph. Sampling keeps iteration interactive while
+// preserving the shape of the data.
+const sampleSize = view(Inputs.range([50, Math.min(3000, filteredData.length)], {
+  value: Math.min(500, filteredData.length),
+  step: 50,
+  label: "Sample rows",
+}));
+```
+
+```js
+const sampledData = (() => {
+  if (sampleSize >= filteredData.length) return filteredData;
+  // Deterministic stride sample so the same UI control gives the same rows.
+  const stride = filteredData.length / sampleSize;
+  const out = new Array(sampleSize);
+  for (let i = 0; i < sampleSize; i++) out[i] = filteredData[Math.floor(i * stride)];
+  return out;
+})();
+```
+
+Sampled **${sampledData.length}** of ${filteredData.length} rows for DR.
+
+## Run
+
+```js
+const runBtn = view(Inputs.button("▶ Run DR", { value: 0, reduce: (v) => v + 1 }));
+```
+
+```js
+// A reactive view of the current run status that streams from a worker.
+// runBtn === 0 on first load → yield the precomputed baseline coords so the
+// scatter renders immediately without running DR.
+const runStatus = (async function* () {
+  if (runBtn === 0) {
+    yield { status: "Baseline", currentEpoch: 0, targetEpoch: 0, algo: "precomputed",
+            embedding: sampledData.map((d) => [d.x, d.y]) };
+    return;
+  }
+  const matrix = sampledData.map((d) => d.embedding);
+  if (!matrix.length || !Array.isArray(matrix[0])) {
+    yield { status: "Error", error: "Current dataset has no `embedding` column.",
+            currentEpoch: 0, targetEpoch: 0, algo: config.algo, embedding: [] };
+    return;
+  }
+  const iter = runInWorker(drFit, {
+    matrix,
+    algo: config.algo,
+    params: config.params,
+    showDynamic: config.showDynamic,
+    yieldEvery: 5,
+  }, {
+    type: "module",
+    preamble: DR_WORKER_PREAMBLE,
+  });
+  for await (const tick of iter) {
+    if (tick?.__error__) {
+      yield { status: "Error", error: tick.message, currentEpoch: 0, targetEpoch: 0,
+              algo: config.algo, embedding: [] };
+      return;
+    }
+    yield tick;
+  }
+})();
+```
+
+```js
+display(html`<div style="display:flex;gap:1em;align-items:center;font-size:.9em;color:var(--theme-foreground-muted);flex-wrap:wrap;">
+  <div><strong>Status:</strong> ${runStatus.status}${runStatus.error ? ` — ${runStatus.error}` : ""}</div>
+  <div><strong>Algo:</strong> ${runStatus.algo}</div>
+  ${runStatus.targetEpoch ? html`<div><strong>Epoch:</strong> ${runStatus.currentEpoch} / ${runStatus.targetEpoch}</div>` : ""}
+  ${runStatus.note ? html`<div style="opacity:.7;">(${runStatus.note})</div>` : ""}
+  ${runStatus._time ? html`<div><em>+${Math.round(runStatus._time)} ms</em></div>` : ""}
+</div>`);
+```
+
+## Scatter
+
+```js
+// Merge the current embedding into the tidy rows so the scatter sees
+// { ...d, x, y } with fresh coords. Fall back to d.x / d.y (baseline) if the
+// run hasn't produced coords for a given row yet.
+const viewData = sampledData.map((d, i) => {
+  const xy = runStatus?.embedding?.[i];
+  return xy ? { ...d, x: xy[0], y: xy[1] } : d;
+});
+```
+
+```js
+const scatter = view(BrushableScatterPlot(viewData, {
   x: "x",
   y: "y",
   id: "id",
@@ -59,24 +152,6 @@ display(html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
 </div>`);
 ```
 
-## DR controls (schema-driven)
-
-```js
-const config = view(drControls({ algo: "UMAP", showAdvanced: false }));
-```
-
-```js
-display(html`<pre style="font-size:.8em;">${JSON.stringify(config, null, 2)}</pre>`);
-```
-
-```js
-const runBtn = Inputs.button("▶ Run DR", { disabled: true });
-display(htl.html`<div style="color:var(--theme-foreground-muted);font-size:.85em;margin-top:.5em;">
-  (Phase 1 wires this button to a dr-worker that streams the embedding back.)
-</div>`);
-display(runBtn);
-```
-
 ## Saved runs
 
 ```js
@@ -85,7 +160,7 @@ const picked = view(runList());
 
 ```js
 display(htl.html`<div style="color:var(--theme-foreground-muted);font-size:.85em;">
-  Selected run: ${picked?.name ?? "none"}
+  Selected run: ${picked?.name ?? "none"} (saving runs lands in Phase 4)
 </div>`);
 ```
 
@@ -100,11 +175,9 @@ display(workerButton);
 
 ```js
 const count = (async function* () {
-  workerButton;  // reactive dependency — re-run when clicked
+  workerButton;
   const iter = runInWorker(function* main(n) {
-    for (let i = 0; i < n; i++) {
-      yield { i, sqrt: Math.sqrt(i) };
-    }
+    for (let i = 0; i < n; i++) yield { i, sqrt: Math.sqrt(i) };
   }, 100);
   for await (const tick of iter) yield tick;
 })();
@@ -116,4 +189,4 @@ display(html`<div>Worker tick: <b>${count?.i ?? 0}</b> · √ = ${count?.sqrt?.t
 
 ---
 
-See [Compare](./compare) for side-by-side run comparison (coming in Phase 2).
+See [Compare](./compare) for side-by-side run comparison (Phase 4).

@@ -26,7 +26,7 @@ export const DR_SCHEMAS = {
       { name: "metric", type: "select", default: "euclidean", options: COMMON_METRIC_OPTIONS, description: "Distance metric" },
     ],
   },
-  Isomap: {
+  ISOMAP: {
     label: "Isomap",
     iterative: false,
     params: [

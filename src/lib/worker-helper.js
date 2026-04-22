@@ -84,12 +84,7 @@ export function runInWorker(fn, arg, options = {}) {
 
       const onMessage = (e) => {
         const payload = e.data;
-        if (payload && payload.__error__) {
-          done = true;
-          waiter?.resolve({ value: payload, done: true });
-          waiter = null;
-          return;
-        }
+        const isError = payload && payload.__error__;
         if (waiter) {
           const r = waiter;
           waiter = null;
@@ -97,11 +92,18 @@ export function runInWorker(fn, arg, options = {}) {
         } else {
           queue.push(payload);
         }
+        if (isError) done = true;  // flush error first, then end
       };
-      const onError = (e) => {
+      const onError = (ev) => {
+        const payload = { __error__: true, message: ev?.message ?? "worker error" };
+        if (waiter) {
+          const r = waiter;
+          waiter = null;
+          r.resolve({ value: payload, done: false });
+        } else {
+          queue.push(payload);
+        }
         done = true;
-        waiter?.resolve({ value: { __error__: true, message: e?.message ?? "worker error" }, done: true });
-        waiter = null;
       };
       const onExit = () => {
         done = true;

@@ -111,11 +111,12 @@ See `docs/research/umap-playground-dissection.md` for the template this is deriv
 
 ## How to add a new DR algorithm
 
-Check that druid.js supports it (`docs/research/druid-js.md` lists all 14). Then:
+Check that druid.js supports it (`docs/research/druid-js.md` lists all 14) and confirm the class name matches druid's export casing (e.g., `UMAP`, `TSNE`, `ISOMAP` — all caps in some cases). Then:
 
-1. Add an entry to `src/components/dr-schemas.js` describing its parameters (name, type, default, min/max/step, description). That is all the new UI you have to write — `dr-controls.js` renders schemas into reactive forms generically.
-2. Add a branch to `src/lib/dr-worker.js` that instantiates the algorithm and iterates via `.generator()`. The yield shape is always `{ status, currentEpoch, targetEpoch, embedding }` — the rest of the app doesn't care which algorithm it is.
-3. If the algorithm has non-standard output (e.g., LDA needs labels), document that in the schema and skip metrics that don't apply.
+1. Add an entry to `src/components/dr-schemas.js` describing its parameters (name, type, default, min/max/step, description). `dr-controls.js` renders schemas into reactive forms generically — no UI code needed.
+2. **Usually no `dr-worker.js` change.** The `drFit` generator already dispatches on `druid[algo]` and iterates `.generator()`, yielding `{ status, currentEpoch, targetEpoch, embedding, algo }`. Every druid DR class implements `.generator()` (even non-iterative ones yield once), so the generic path works for PCA, MDS, ISOMAP, LLE, TSNE, UMAP, TriMap, and by extension the other seven druid algorithms not yet in v1.
+3. Only edit `dr-worker.js` if the algorithm has **non-standard output** (e.g., LDA requires labels, SQDMDS returns a Matrix with different shape, some algos yield a Float64Array). Add a branch; keep the yield shape the same.
+4. If the algorithm's metric parameter isn't one of the inlined metric functions (`euclidean`, `euclidean_squared`, `manhattan`, `chebyshev`, `cosine` — see `DR_WORKER_PREAMBLE`), either extend the preamble with the new metric or note in the schema that the metric field is fixed for this algorithm.
 
 ## How to add a new quality metric
 

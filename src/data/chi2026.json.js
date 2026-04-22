@@ -10,8 +10,11 @@
 //   - <root>/2026_04Apr_10_chi2026_umap_TitleAbstract.csv           (precomputed UMAP baseline)
 //   - <root>/2026_04Apr_10_chi2026_cluster_topics.json              (6 HDBSCAN cluster labels)
 //
-// Set CHI2026_DATA_DIR to override the source path. Falls back to the local
-// path on the machine where this project was originally built.
+// Resolution order for the source directory:
+//   1. $CHI2026_DATA_DIR (explicit env var — preferred on CI / someone else's machine).
+//   2. ./data/chi2026/ relative to the current working directory (drop the
+//      four files there for a zero-config local build).
+//   3. Fail with a loud error that tells the user exactly what to do.
 //
 // Output shape (one record per paper that has an embedding):
 //   { id, title, authors, track, cluster, clusterLabel, x, y, embedding: [384 numbers] }
@@ -19,13 +22,36 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-const ROOT = process.env.CHI2026_DATA_DIR
-  ?? "/Users/aguerra/workspace/chi2026_papers";
-
 const PROGRAM_FILE    = "2026_04Apr_10_CHI_2026_program.json";
 const EMBED_FILE      = "2026_04Apr_10_chi2026_embeddings_TitleAbstract.json";
 const UMAP_FILE       = "2026_04Apr_10_chi2026_umap_TitleAbstract.csv";
 const TOPICS_FILE     = "2026_04Apr_10_chi2026_cluster_topics.json";
+
+async function resolveRoot() {
+  const candidates = [];
+  if (process.env.CHI2026_DATA_DIR) {
+    candidates.push({ path: process.env.CHI2026_DATA_DIR, source: "$CHI2026_DATA_DIR" });
+  }
+  candidates.push({ path: path.join(process.cwd(), "data", "chi2026"), source: "./data/chi2026/" });
+
+  for (const { path: dir, source } of candidates) {
+    try {
+      await fs.access(path.join(dir, PROGRAM_FILE));
+      return dir;
+    } catch {
+      // try next
+    }
+  }
+
+  const tried = candidates.map((c) => `  - ${c.source} (${c.path})`).join("\n");
+  throw new Error(
+    `chi2026 source files not found. Set CHI2026_DATA_DIR to the directory ` +
+    `containing ${PROGRAM_FILE}, or place the four source files under ` +
+    `./data/chi2026/. Tried:\n${tried}`,
+  );
+}
+
+const ROOT = await resolveRoot();
 
 async function readJSON(relPath) {
   const full = path.join(ROOT, relPath);

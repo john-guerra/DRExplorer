@@ -11,6 +11,7 @@ import { runList } from "./components/run-list.js";
 import { metricsPanel } from "./components/metrics-panel.js";
 import { scentedCheckbox } from "./components/scented-checkbox.js";
 import { scatterControls } from "./components/scatter-controls.js";
+import { searchCheckbox } from "./components/search-checkbox.js";
 import { runInWorker } from "./lib/worker-helper.js";
 import { drFit, DR_WORKER_PREAMBLE } from "./lib/dr-worker.js";
 import { computeMetrics, METRICS_WORKER_PREAMBLE } from "./lib/metrics-worker.js";
@@ -96,6 +97,45 @@ const sampledData = (() => {
 
 Sampled **${sampledData.length}** of ${filteredData.length} rows for DR.
 
+```js
+// If the dataset has a pre-computed `embedding` column (Array of numbers
+// per row), use it as the DR input. Otherwise, let the user pick which
+// numeric columns to feed into DR. Detection runs once per sampledData.
+const hasEmbedding = sampledData.length > 0 && Array.isArray(sampledData[0].embedding);
+
+// Numeric columns are those whose first value is a number AND that aren't
+// the embedding Array or any of the reserved column names.
+const numericColumns = !hasEmbedding && sampledData.length > 0
+  ? Object.keys(sampledData[0]).filter(
+      (k) => typeof sampledData[0][k] === "number" && !RESERVED_COLUMNS.has(k),
+    )
+  : [];
+```
+
+```js
+// Only show the column picker when we're NOT in embedding mode.
+const selectedColumns = hasEmbedding
+  ? null
+  : view(searchCheckbox(numericColumns, {
+      label: "DR input attributes",
+      value: numericColumns,
+      height: 180,
+    }));
+```
+
+```js
+// Build the DR input matrix. Embedding mode: read the Array. Column mode:
+// stack the selected numeric columns. Empty selection short-circuits so
+// downstream cells get a clear error rather than a DR crash.
+const drMatrix = hasEmbedding
+  ? sampledData.map((d) => d.embedding)
+  : (selectedColumns?.length > 0
+      ? sampledData.map((d) => selectedColumns.map((c) => +d[c]))
+      : []);
+```
+
+${hasEmbedding ? html`<em style="color:var(--theme-foreground-muted);font-size:.85em;">Using the precomputed <code>embedding</code> column (${sampledData[0]?.embedding?.length ?? 0} dims).</em>` : (selectedColumns?.length > 0 ? html`<em style="color:var(--theme-foreground-muted);font-size:.85em;">Using ${selectedColumns.length} selected columns as DR input.</em>` : html`<em style="color:#dc2626;font-size:.85em;">Pick at least one numeric column above to run DR.</em>`)}
+
 ## Run
 
 ```js
@@ -112,12 +152,13 @@ const runStatus = (async function* () {
             embedding: sampledData.map((d) => [d.x, d.y]) };
     return;
   }
-  const matrix = sampledData.map((d) => d.embedding);
-  if (!matrix.length || !Array.isArray(matrix[0])) {
-    yield { status: "Error", error: "Current dataset has no `embedding` column.",
+  if (!drMatrix.length || !Array.isArray(drMatrix[0])) {
+    yield { status: "Error",
+            error: hasEmbedding ? "Current dataset has no `embedding` column." : "Pick at least one input column.",
             currentEpoch: 0, targetEpoch: 0, algo: config.algo, embedding: [] };
     return;
   }
+  const matrix = drMatrix;
   // Tie the worker's lifetime to this cell's invalidation. When any dep
   // (sampledData, config, runBtn) changes, the old worker is aborted before
   // a new one starts — no zombie runs writing into the reactive graph.
@@ -170,7 +211,7 @@ const metricsStatus = (async function* () {
     yield { status: "Idle", result: null };
     return;
   }
-  const hd = sampledData.map((d) => d.embedding);
+  const hd = drMatrix;
   const ld = runStatus.embedding;
   if (!hd.length || hd.length !== ld.length) {
     yield { status: "Error", error: "hd/ld length mismatch", result: null };
@@ -348,7 +389,15 @@ const refineStatus = (async function* () {
     yield { status: "Error", error: refineSelection.err, embedding: [], rows: [] };
     return;
   }
-  const matrix = refineSelection.rows.map((d) => d.embedding);
+  const matrix = hasEmbedding
+    ? refineSelection.rows.map((d) => d.embedding)
+    : (selectedColumns?.length > 0
+        ? refineSelection.rows.map((d) => selectedColumns.map((c) => +d[c]))
+        : []);
+  if (matrix.length === 0) {
+    yield { status: "Error", error: "No input matrix (pick columns first)", embedding: [], rows: refineSelection.rows };
+    return;
+  }
   const ac = new AbortController();
   invalidation.then(() => ac.abort());
   const iter = runInWorker(drFit, {
@@ -378,7 +427,9 @@ const refineMetricsStatus = (async function* () {
     yield { status: "Idle", result: null };
     return;
   }
-  const hd = refineStatus.rows.map((d) => d.embedding);
+  const hd = hasEmbedding
+    ? refineStatus.rows.map((d) => d.embedding)
+    : refineStatus.rows.map((d) => selectedColumns.map((c) => +d[c]));
   const ld = refineStatus.embedding;
   const k = Math.min(metricsK, Math.floor(hd.length / 2));
   if (k < 2) {
